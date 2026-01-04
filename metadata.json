@@ -1,0 +1,7 @@
+{
+  "name": "Gemini Conversational Voice AI Demo",
+  "description": "A demonstration of a conversational voice application built with the Gemini API. This app answers the user's questions about the feasibility and cost of building such applications by providing a functional example.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
