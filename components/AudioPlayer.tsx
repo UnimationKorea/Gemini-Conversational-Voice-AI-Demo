@@ -28,6 +28,9 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ pcmData, sampleRate }) => {
       if (!audioContextRef.current) {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate });
       }
+      if (audioContextRef.current.state === 'suspended') {
+        await audioContextRef.current.resume();
+      }
       audioBufferRef.current = await decodeAudioData(pcmData, audioContextRef.current, sampleRate, 1);
       setDuration(audioBufferRef.current.duration);
     }
@@ -36,6 +39,7 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ pcmData, sampleRate }) => {
   const handlePlay = async () => {
     await initAudio();
     if (!audioContextRef.current || !audioBufferRef.current) return;
+    if (audioContextRef.current.state === 'suspended') await audioContextRef.current.resume();
 
     const source = audioContextRef.current.createBufferSource();
     source.buffer = audioBufferRef.current;
@@ -45,7 +49,7 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ pcmData, sampleRate }) => {
       if (isPlaying) {
         const elapsed = audioContextRef.current!.currentTime - startTimeRef.current;
         const newOffset = playbackOffset + elapsed;
-        if (newOffset >= audioBufferRef.current!.duration - 0.01) {
+        if (newOffset >= audioBufferRef.current!.duration - 0.05) {
             setIsPlaying(false);
             setPlaybackOffset(0);
         }
@@ -72,22 +76,8 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ pcmData, sampleRate }) => {
     sourceNodeRef.current?.stop();
     setPlaybackOffset(0);
     setIsPlaying(false);
-    // Use setTimeout to ensure state is processed before re-triggering play
     setTimeout(async () => {
-      const source = audioContextRef.current!.createBufferSource();
-      source.buffer = audioBufferRef.current!;
-      source.connect(audioContextRef.current!.destination);
-      source.onended = () => {
-          const elapsed = audioContextRef.current!.currentTime - startTimeRef.current;
-          if (playbackOffset + elapsed >= audioBufferRef.current!.duration - 0.1) {
-              setIsPlaying(false);
-              setPlaybackOffset(0);
-          }
-      };
-      source.start(0, 0);
-      startTimeRef.current = audioContextRef.current!.currentTime;
-      sourceNodeRef.current = source;
-      setIsPlaying(true);
+      await handlePlay();
     }, 10);
   };
 
@@ -96,8 +86,8 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ pcmData, sampleRate }) => {
       {!isPlaying ? (
         <button 
           onClick={handlePlay}
-          className="p-2 rounded-full bg-gray-700 hover:bg-gray-600 transition-colors text-blue-400"
-          title="Play"
+          className="p-2 rounded-full bg-gray-700 hover:bg-gray-600 transition-colors text-blue-400 shadow-sm"
+          title="재생"
         >
           <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
             <path d="M8 5v14l11-7z" />
@@ -106,8 +96,8 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ pcmData, sampleRate }) => {
       ) : (
         <button 
           onClick={handlePause}
-          className="p-2 rounded-full bg-gray-700 hover:bg-gray-600 transition-colors text-yellow-400"
-          title="Pause"
+          className="p-2 rounded-full bg-gray-700 hover:bg-gray-600 transition-colors text-yellow-400 shadow-sm"
+          title="일시정지"
         >
           <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
             <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
@@ -116,8 +106,8 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({ pcmData, sampleRate }) => {
       )}
       <button 
         onClick={handleReplay}
-        className="p-2 rounded-full bg-gray-700 hover:bg-gray-600 transition-colors text-purple-400"
-        title="Replay"
+        className="p-2 rounded-full bg-gray-700 hover:bg-gray-600 transition-colors text-purple-400 shadow-sm"
+        title="다시듣기"
       >
         <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />

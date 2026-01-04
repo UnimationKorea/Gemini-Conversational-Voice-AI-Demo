@@ -13,8 +13,8 @@ type VoiceName = 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Zephyr';
 
 const API_KEY = process.env.API_KEY;
 const AVAILABLE_VOICES: VoiceName[] = ['Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir'];
-const STORAGE_KEY = 'gemini_voice_history';
-const PERSONA_KEY = 'gemini_voice_persona';
+const STORAGE_KEY = 'gemini_voice_history_v2';
+const PERSONA_KEY = 'gemini_voice_persona_v2';
 
 function mergeUint8Arrays(arrays: Uint8Array[]): Uint8Array {
     const totalLength = arrays.reduce((acc, arr) => acc + arr.length, 0);
@@ -42,7 +42,14 @@ const App: React.FC = () => {
     const [transcripts, setTranscripts] = useState<TranscriptEntry[]>(() => {
         const saved = localStorage.getItem(STORAGE_KEY);
         if (saved) {
-            try { return JSON.parse(saved); } catch (e) { return []; }
+            try {
+                const parsed = JSON.parse(saved);
+                // Convert base64 strings back to Uint8Array for pcmData
+                return parsed.map((t: any) => ({
+                    ...t,
+                    pcmData: t.pcmData ? decode(t.pcmData) : undefined
+                }));
+            } catch (e) { return []; }
         }
         return [];
     });
@@ -65,7 +72,12 @@ const App: React.FC = () => {
     const transcriptEndRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(transcripts));
+        // Save transcripts with base64 encoded pcmData
+        const toSave = transcripts.map(t => ({
+            ...t,
+            pcmData: t.pcmData ? encode(t.pcmData) : undefined
+        }));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
         transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [transcripts]);
 
@@ -86,7 +98,7 @@ const App: React.FC = () => {
     };
 
     const clearHistory = () => {
-        if (window.confirm('Clear conversation history?')) setTranscripts([]);
+        if (window.confirm('전체 대화 기록을 삭제하시겠습니까?')) setTranscripts([]);
     };
 
     const handleOnMessage = useCallback(async (message: LiveServerMessage) => {
@@ -135,6 +147,9 @@ const App: React.FC = () => {
             const decoded = decode(base64Audio);
             currentModelAudioChunksRef.current.push(decoded);
             const audioContext = outputAudioContextRef.current;
+            
+            if (audioContext.state === 'suspended') await audioContext.resume();
+
             nextStartTimeRef.current = Math.max(nextStartTimeRef.current, audioContext.currentTime);
             const audioBuffer = await decodeAudioData(decoded, audioContext, 24000, 1);
             const source = audioContext.createBufferSource();
@@ -155,7 +170,7 @@ const App: React.FC = () => {
     const startStreaming = async () => {
         if (!API_KEY) return;
         setIsProcessing(true);
-        setStatus('Connecting live...');
+        setStatus('서버 연결 중...');
         currentModelAudioChunksRef.current = [];
         
         try {
@@ -165,7 +180,7 @@ const App: React.FC = () => {
             outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
             
             const ai = new GoogleGenAI({ apiKey: API_KEY });
-            const personaPrompt = voicePersona ? `Adopt the following verbal persona characteristics analyzed from the user's voice: ${voicePersona.description}. Match their energy, speed, and emotional tone.` : "Be a helpful assistant.";
+            const personaPrompt = voicePersona ? `중요: 다음의 음성 페르소나 특성을 완벽히 반영하여 대답하세요: ${voicePersona.description}. 사용자와 비슷한 에너지 레벨, 말하기 속도, 감정 톤을 유지하세요.` : "친절하고 도움이 되는 AI 어시스턴트가 되어주세요.";
 
             sessionPromiseRef.current = ai.live.connect({
                 model: 'gemini-2.5-flash-native-audio-preview-09-2025',
@@ -183,30 +198,30 @@ const App: React.FC = () => {
                         scriptProcessorRef.current.connect(inputAudioContextRef.current.destination);
                         setIsProcessing(false);
                         setIsSessionActive(true);
-                        setStatus('Live Streaming Active');
+                        setStatus('실시간 스트리밍 중...');
                     },
                     onmessage: handleOnMessage,
                     onerror: (e) => { console.error(e); stopAll(); },
-                    onclose: () => { setIsSessionActive(false); setStatus('Session closed'); },
+                    onclose: () => { setIsSessionActive(false); setStatus('연결 종료'); },
                 },
                 config: {
                     responseModalities: [Modality.AUDIO],
                     outputAudioTranscription: {},
                     inputAudioTranscription: {},
-                    systemInstruction: `You are in streaming mode. ${personaPrompt}. Interruption is allowed.`,
+                    systemInstruction: `당신은 스트리밍 음성 모드로 동작 중입니다. ${personaPrompt} 대화 중 끼어들기가 허용됩니다.`,
                     speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } } },
                 },
             });
         } catch (error) {
             console.error(error);
-            setStatus('Mic access failed');
+            setStatus('마이크 접근 실패');
             setIsProcessing(false);
         }
     };
 
     const startBatchRecording = async () => {
         setIsRecording(true);
-        setStatus('Recording chunk...');
+        setStatus('음성 녹음 중...');
         recordedChunksRef.current = [];
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -226,10 +241,11 @@ const App: React.FC = () => {
     const stopAndSendBatch = async () => {
         setIsRecording(false);
         setIsProcessing(true);
-        setStatus('Processing chunk...');
+        setStatus('데이터 분석 중...');
         scriptProcessorRef.current?.disconnect();
         mediaStreamSourceRef.current?.disconnect();
         mediaStreamRef.current?.getTracks().forEach(t => t.stop());
+        
         const totalLength = recordedChunksRef.current.reduce((acc, chunk) => acc + chunk.length, 0);
         const flattened = new Float32Array(totalLength);
         let offset = 0;
@@ -241,21 +257,21 @@ const App: React.FC = () => {
         
         try {
             const ai = new GoogleGenAI({ apiKey: API_KEY! });
-            const personaPrompt = voicePersona ? `Adopt the following verbal persona characteristics analyzed from the user's voice: ${voicePersona.description}.` : "";
+            const personaPrompt = voicePersona ? `다음 페르소나를 반영하여 대답하세요: ${voicePersona.description}.` : "";
             
             const response = await ai.models.generateContent({
                 model: 'gemini-3-flash-preview',
                 contents: [
                     {
                         parts: [
-                            { text: `${personaPrompt} Respond naturally to the user's request.` },
+                            { text: `${personaPrompt} 사용자의 음성 메시지에 자연스럽게 답하세요.` },
                             { inlineData: { data: pcmBlob.data, mimeType: pcmBlob.mimeType } }
                         ]
                     }
                 ]
             });
 
-            const textResponse = response.text || "No response generated.";
+            const textResponse = response.text || "응답을 생성하지 못했습니다.";
             if (!outputAudioContextRef.current) outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
             
             const ttsResponse = await ai.models.generateContent({
@@ -271,6 +287,7 @@ const App: React.FC = () => {
             let finalPcm: Uint8Array | undefined;
             if (base64Audio) {
                 finalPcm = decode(base64Audio);
+                if (outputAudioContextRef.current.state === 'suspended') await outputAudioContextRef.current.resume();
                 const audioBuffer = await decodeAudioData(finalPcm, outputAudioContextRef.current, 24000, 1);
                 const source = outputAudioContextRef.current.createBufferSource();
                 source.buffer = audioBuffer;
@@ -280,13 +297,13 @@ const App: React.FC = () => {
 
             setTranscripts(prev => [
                 ...prev, 
-                { speaker: 'user', text: '[Audio Chunk Sent]', mode: 'batch', timestamp: Date.now() },
+                { speaker: 'user', text: '[음성 메시지 전송됨]', mode: 'batch', timestamp: Date.now() },
                 { speaker: 'model', text: textResponse, mode: 'batch', pcmData: finalPcm, timestamp: Date.now() }
             ]);
-            setStatus('Chunk processed');
+            setStatus('처리 완료');
         } catch (error) {
             console.error(error);
-            setStatus('Error processing');
+            setStatus('오류 발생');
         } finally {
             setIsProcessing(false);
         }
@@ -302,7 +319,7 @@ const App: React.FC = () => {
         setIsSessionActive(false);
         setIsRecording(false);
         setIsProcessing(false);
-        setStatus('Ready');
+        setStatus('준비됨');
     }, []);
 
     const handleAction = () => {
@@ -312,7 +329,7 @@ const App: React.FC = () => {
 
     const handlePersonaGenerated = (description: string) => {
         setVoicePersona({ description, analyzedAt: Date.now() });
-        setStatus("Voice Persona Cloned Successfully!");
+        setStatus("음성 페르소나 복제 성공!");
     };
 
     return (
@@ -328,12 +345,12 @@ const App: React.FC = () => {
                 <div className="flex items-center gap-3">
                     <button 
                         onClick={() => setIsPersonaModalOpen(true)}
-                        className={`p-2 rounded-lg border transition-all flex items-center gap-2 ${voicePersona ? 'bg-purple-500/10 border-purple-500/50 text-purple-400' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}
+                        className={`p-2 rounded-lg border transition-all flex items-center gap-2 ${voicePersona ? 'bg-purple-500/10 border-purple-500/50 text-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.2)]' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'}`}
                         title="Voice Persona DNA"
                     >
                         <DnaIcon />
                         <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:inline">
-                            {voicePersona ? 'DNA Active' : 'Clone Persona'}
+                            {voicePersona ? 'DNA 활성' : 'Persona 복제'}
                         </span>
                     </button>
 
@@ -358,7 +375,7 @@ const App: React.FC = () => {
                     <div className="bg-purple-900/20 border border-purple-500/30 rounded-2xl p-4 flex items-start gap-4 animate-in fade-in zoom-in duration-500">
                         <div className="p-2 bg-purple-500/20 rounded-lg text-purple-400"><DnaIcon /></div>
                         <div>
-                            <p className="text-[10px] font-bold text-purple-400 uppercase tracking-widest mb-1">Active Verbal Identity</p>
+                            <p className="text-[10px] font-bold text-purple-400 uppercase tracking-widest mb-1">활성화된 음성 정체성</p>
                             <p className="text-xs text-purple-200/70 italic leading-relaxed">"{voicePersona.description}"</p>
                         </div>
                     </div>
@@ -366,10 +383,10 @@ const App: React.FC = () => {
 
                 <section className="bg-gray-800/30 rounded-2xl p-6 border border-gray-700/50 backdrop-blur-sm">
                     <h2 className="text-lg font-semibold mb-2 flex items-center gap-2">
-                        <SettingsIcon /> Feasibility Explorer
+                        <SettingsIcon /> 기술 구현 가능성 탐색
                     </h2>
                     <p className="text-gray-400 text-sm leading-relaxed">
-                        Gemini allows "cloning" of a verbal personality. By analyzing your speech DNA, the model adapts its cadence to match yours, even when using prebuilt timbres.
+                        Gemini API를 사용하여 대화형 음성 앱을 개발하는 것은 매우 실용적입니다. 실시간 스트리밍 모드와 배치 모드를 통해 비용과 사용자 경험 사이의 균형을 맞출 수 있습니다.
                     </p>
                 </section>
 
@@ -377,15 +394,15 @@ const App: React.FC = () => {
                     {transcripts.length === 0 && (
                         <div className="text-center py-20 text-gray-500 italic flex flex-col items-center gap-4">
                             <div className="w-16 h-16 rounded-full bg-gray-800 flex items-center justify-center opacity-30"><MicrophoneIcon /></div>
-                            <p>Laboratory idle. Initiate session below.</p>
+                            <p>대화 기록이 없습니다. 아래 버튼을 눌러 시작하세요.</p>
                         </div>
                     )}
                     {transcripts.map((entry, index) => (
-                        <div key={index} className={`flex flex-col ${entry.speaker === 'user' ? 'items-end' : 'items-start'} group`}>
+                        <div key={index} className={`flex flex-col ${entry.speaker === 'user' ? 'items-end' : 'items-start'} group animate-in slide-in-from-bottom-2 duration-300`}>
                             <div className="flex items-center gap-2 mb-1 px-1">
-                                <span className="text-[10px] font-bold uppercase tracking-widest opacity-40">{entry.speaker === 'user' ? 'Input' : 'AI Output'} • {entry.mode}</span>
+                                <span className="text-[10px] font-bold uppercase tracking-widest opacity-40">{entry.speaker === 'user' ? '사용자' : 'AI'} • {entry.mode === 'streaming' ? '실시간' : '배치'}</span>
                                 <span className="text-[10px] opacity-0 group-hover:opacity-30 transition-opacity">
-                                    {new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                    {new Date(entry.timestamp).toLocaleTimeString()}
                                 </span>
                             </div>
                             <div className={`max-w-[85%] p-4 rounded-2xl shadow-lg transition-all ${
@@ -421,7 +438,7 @@ const App: React.FC = () => {
                         {(isSessionActive || isRecording) && <span className="absolute inset-0 rounded-full border-4 border-red-500 animate-ping opacity-40" />}
                     </button>
                     <p className="text-[10px] text-gray-600 uppercase tracking-widest font-bold">
-                        {inputMode === 'streaming' ? `Live DNA: ${selectedVoice}` : `Push-to-Talk (${selectedVoice})`}
+                        {inputMode === 'streaming' ? `DNA: ${selectedVoice}` : `Push-to-Talk (${selectedVoice})`}
                     </p>
                 </div>
             </footer>
